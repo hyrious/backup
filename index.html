@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<title>GitHub Backup Utils</title>
+<link rel="stylesheet" href="sanitize.css">
+<style>
+  body{width:1024px;margin:0 auto;padding:12px;font:22px/1.5 Alegreya,serif}
+  @media(max-width:400px){body{font-size:16px}}
+  h1,h2,h3,h4,h5,h6{font-weight:normal;font-family:Alegreya,serif}
+  h1{margin-top:0;border-bottom:2px solid}
+  aside{font-size:16px;font-family:Iosevka,monospace;text-align:right}
+  input{font-family:Iosevka,monospace;border:0;border-bottom:2px solid;outline:0}
+  pre,code{font-family:Iosevka,monospace}
+  a{text-decoration:none;font-family:Alegreya Sans,sans-serif}
+  a:hover{text-decoration:underline}
+  td{padding:8px}
+</style>
+<body>
+  <aside id="limit">(unavailable)</aside>
+  <h1>GitHub Backup Utils</h1>
+  <blockquote>
+    This page is made for the ones like
+    <a href="https://github.com/ihacklog">@ihacklog</a>
+    ( <a href="https://www.v2ex.com/t/471437">related post</a> ).
+  </blockquote>
+  <div style="display:flex">
+    <span style="margin:0 8px">* Auth token ( <a href="https://developer.github.com/v4/guides/forming-calls/#authenticating-with-graphql">?</a> )</span>
+    <input required id="token" minlength="40" maxlength="40" style="flex-grow:1">
+    <span style="padding:0 36px;user-select:none">OK</span>
+  </div>
+  <pre id="user" style="padding:.5em;border:2px solid">(invalid token)</pre>
+  <button id="pullstars" disabled>Pull Stars</button>
+  <button id="pullfollowing" disabled>Pull Following</button>
+  <aside><a href="https://github.com/hyrious/backup">Improve It</a></aside>
+  <script src="axios.min.js"></script>
+  <script src="moment.js"></script>
+  <script>
+    (function() {
+      var link = document.createElement('link');
+      link.href = 'https://fonts.googleapis.com/css?family=Alegreya|Alegreya+Sans';
+      link.rel = 'stylesheet';
+      document.head.appendChild(link);
+      function $(id) { return document.getElementById(id); }
+      var token, field = { headers: { Authorization: null } };
+      function q(s) {
+        field.headers.Authorization = 'bearer ' + token;
+        return new Promise(resolve => {
+          axios.post('https://api.github.com/graphql', { query: s.trim() }, field).then(r => {
+            var total = r.headers['x-ratelimit-limit'];
+            var remain = r.headers['x-ratelimit-remaining'];
+            var reset = r.headers['x-ratelimit-reset'];
+            $('limit').textContent = remain + '/' + total + ' refresh ' + moment(reset * 1000).fromNow();
+            resolve(r.data);
+          })
+        });
+      }
+      function d(o, n) {
+        var href = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(o));
+        var a = document.createElement('a');
+        a.href = href;
+        a.download = n + '.json';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }
+      var login, starcount, followingcount;
+      $('token').onchange = function(event) {
+        if (token === this.value) return;
+        token = this.value;
+        if (token.length !== 40)
+          $('user').textContent = '(invalid token)';
+        else {
+          q('query { viewer { login } }').then(r => {
+            login = r.data.viewer.login;
+            q(`
+              query {
+                user(login: ${JSON.stringify(login)}) {
+                  repositories(first: 100) { nodes { url } }
+                  starredRepositories(first: 1) { totalCount }
+                  following(first: 1) { totalCount } } }
+            `).then(r => {
+              starcount = r.data.user.starredRepositories.totalCount;
+              followingcount = r.data.user.following.totalCount;
+              repositories = r.data.user.repositories.nodes;
+              $('user').textContent = [
+                login,
+                `stars: ${starcount}`,
+                `following: ${followingcount}`,
+                `repositories:`
+              ].join('\n') + repositories.map(({ url }) => {
+                return `\n    git clone ${url}`
+              }).join('');
+              $('pullstars').disabled = false;
+              $('pullfollowing').disabled = false;
+            });
+          });
+        }
+      };
+      var stars = [];
+      $('pullstars').onclick = function(event) {
+        if (!login) return;
+        if (!starcount) return;
+        (async () => {
+          var cursor, next = true;
+          while (next) {
+            let fix = cursor ? ', after: ' + JSON.stringify(cursor): '';
+            let r = await q(`query {
+              user(login: ${JSON.stringify(login)}) {
+                starredRepositories(first: 100${fix}) {
+                  nodes { url, updatedAt }
+                  pageInfo { endCursor, hasNextPage } } } }`);
+            stars = stars.concat(r.data.user.starredRepositories.nodes);
+            cursor = r.data.user.starredRepositories.pageInfo.endCursor;
+            next = r.data.user.starredRepositories.pageInfo.hasNextPage;
+            $('pullstars').textContent = `${stars.length}/${starcount}`;
+          }
+          d(stars, 'stars');
+          stars = [];
+          $('pullstars').textContent = 'Pull Stars';
+        })();
+      };
+      var following = [];
+      $('pullfollowing').onclick = function(event) {
+        if (!login) return;
+        if (!followingcount) return;
+        (async () => {
+          var cursor, next = true;
+          while (next) {
+            let fix = cursor ? ', after: ' + JSON.stringify(cursor): '';
+            let r = await q(`query {
+              user(login: ${JSON.stringify(login)}) {
+                following(first: 100${fix}) {
+                  nodes { url, updatedAt }
+                  pageInfo { endCursor, hasNextPage } } } }`);
+            following = following.concat(r.data.user.following.nodes);
+            cursor = r.data.user.following.pageInfo.endCursor;
+            next = r.data.user.following.pageInfo.hasNextPage;
+            $('pullfollowing').textContent = `${following.length}/${followingcount}`;
+          }
+          d(following, 'following');
+          following = [];
+          $('pullfollowing').textContent = 'Pull Following';
+        })();
+      };
+    })();
+  </script>
